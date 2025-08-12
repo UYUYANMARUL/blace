@@ -1,0 +1,31 @@
+[package]
+name = "blace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.11.0"
+reth-primitives = { git = "https://github.com/paradigmxyz/reth" }
+alloy-rlp = "0.3"
+alloy-sol-types = "0.8"
+alloy-primitives = "0.8"
+jsonrpsee = {version = "0.25.1", features = ["server", "http-client", "ws-client", "macros"] }
+tokio={ version = "1.41.0", features = ["full"] }
+anyhow="1.0.98"
+serde="1.0.219"
+serde_json="1.0.142"
+tracing="0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+secp256k1 = { version = "0.30", features = ["recovery"] }
+sha3 = "0.10"
+dashmap = "6.1"
+reqwest = { version = "0.11", features = ["json"] }
+ethers = { version = "2.0", features = ["legacy"] }
+rand = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+hyper = { version = "1.0", features = ["full"] }
+
+[dev-dependencies]
