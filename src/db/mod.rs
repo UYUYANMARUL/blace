@@ -5,8 +5,10 @@ use std::{marker::PhantomData, sync::Arc};
 
 use crate::mpt::EthTrie;
 pub mod block_db;
+pub mod bytecode_db;
 pub mod mempool;
 pub mod state_db;
+pub mod storage_db;
 
 impl crate::mpt::AsyncDB for rusty_leveldb::AsyncDB {
     type Error = Status;
@@ -63,12 +65,12 @@ where
 trait DefaultDb {
     type Item: Serialize + DeserializeOwned;
 
-    async fn get(db: &AsyncDB, value: impl Into<Vec<u8>>) -> Option<Self::Item> {
+    async fn get(db: &AsyncDB, key: impl AsRef<[u8]>) -> Option<Self::Item> {
         let config = bincode::config::standard()
             .with_fixed_int_encoding()
             .with_big_endian();
 
-        let value = db.get(value.into()).await;
+        let value = db.get(key.as_ref().to_vec()).await;
 
         match value {
             Ok(Some(value)) => Some(
@@ -83,7 +85,7 @@ trait DefaultDb {
 
     async fn insert(
         db: &mut AsyncDB,
-        key: impl Into<Vec<u8>>,
+        key: impl AsRef<[u8]>,
         value: Self::Item,
     ) -> Option<Self::Item> {
         let config = bincode::config::standard()
@@ -91,8 +93,7 @@ trait DefaultDb {
             .with_big_endian();
 
         let binary_value = bincode::serde::encode_to_vec(&value, config).unwrap();
-        let key = key.into();
-        let _result = db.put(key.clone(), binary_value).await;
+        let _result = db.put(key.as_ref().to_vec(), binary_value).await;
 
         Self::get(db, key).await
     }

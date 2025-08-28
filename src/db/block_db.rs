@@ -12,13 +12,13 @@ impl BlockHeadersDB {
         }
     }
 
-    pub async fn get_block(&self, key: impl Into<Vec<u8>>) -> Option<BlockHeader> {
+    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<BlockHeader> {
         Self::get(&self.db, key).await
     }
 
     pub async fn insert_block(
         &mut self,
-        key: impl Into<Vec<u8>>,
+        key: impl AsRef<[u8]>,
         block: BlockHeader,
     ) -> Option<BlockHeader> {
         Self::insert(&mut self.db, key, block).await
@@ -40,11 +40,11 @@ impl BlockDataDB {
         }
     }
 
-    pub async fn get_block(&self, key: impl Into<Vec<u8>>) -> Option<Block> {
+    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<Block> {
         Self::get(&self.db, key).await
     }
 
-    pub async fn insert_block(&mut self, key: impl Into<Vec<u8>>, block: Block) -> Option<Block> {
+    pub async fn insert_block(&mut self, key: impl AsRef<[u8]>, block: Block) -> Option<Block> {
         let data = Self::insert(&mut self.db, key, block).await;
         Self::flush(&mut self.db).await;
         data

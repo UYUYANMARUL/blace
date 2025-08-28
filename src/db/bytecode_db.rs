@@ -8,38 +8,36 @@ use alloy::primitives::B256;
 use alloy::primitives::U256;
 use anyhow::Context;
 use bytes::Bytes;
+use revm::bytecode::Bytecode;
 use rusty_leveldb::{AsyncDB, Options};
 use serde::{Deserialize, Serialize};
 
-pub struct AccountDB {
+pub struct BytecodeDB {
     db: AsyncDB,
 }
 
-impl AccountDB {
+impl BytecodeDB {
     pub fn new() -> Self {
         Self {
-            db: AsyncDB::new("accounts", Options::default()).unwrap(),
+            db: AsyncDB::new("bytecodes", Options::default()).unwrap(),
         }
     }
 
-    pub async fn get_account(
-        &self,
-        key: impl AsRef<[u8]>,
-    ) -> Result<Option<Account>, anyhow::Error> {
+    pub async fn get_code(&self, key: impl AsRef<[u8]>) -> Result<Option<Bytecode>, anyhow::Error> {
         Ok(Self::get(&self.db, key).await)
     }
 
-    pub async fn set_account_data(
+    pub async fn set_bytecode(
         &mut self,
         key: impl AsRef<[u8]>,
-        account: Account,
-    ) -> Result<Option<Account>, anyhow::Error> {
-        let data = Self::insert(&mut self.db, key, account).await;
+        bytecode: Bytecode,
+    ) -> Result<Option<Bytecode>, anyhow::Error> {
+        let data = Self::insert(&mut self.db, key, bytecode).await;
         Self::flush(&mut self.db).await;
         Ok(data)
     }
 }
 
-impl DefaultDb for AccountDB {
-    type Item = Account;
+impl DefaultDb for BytecodeDB {
+    type Item = Bytecode;
 }

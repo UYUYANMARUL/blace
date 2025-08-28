@@ -1,22 +1,37 @@
 pub mod db;
+pub mod evm;
 pub mod mpt;
+pub mod precompiles;
 pub mod rpc;
 pub mod types;
 
-use alloy::consensus::TypedTransaction;
-use alloy::primitives::keccak256;
+use alloy::consensus::transaction::SignerRecoverable;
+use alloy::consensus::{Transaction as AlloyTransaction, TxEnvelope};
+use alloy::eips::eip7702::RecoveredAuthorization;
+use alloy::eips::eip7702::SignedAuthorization;
 use alloy::primitives::B256;
 use alloy::primitives::U256;
-use alloy::primitives::U64;
+use alloy::rpc::types::AccessListItem;
+use alloy::signers::Either;
 use bytes::Bytes;
-use db::block_db;
 use db::block_db::BlockDataDB;
+use evm::BlaceEvm;
 use mpt::{EthTrie, MemoryDB, Trie, TrieError};
+use revm::context::tx::TxEnvBuilder;
+use revm::context::{BlockEnv, CfgEnv, LocalContext, LocalContextTr, Transaction, TxEnv};
+use revm::database::{CacheDB, EmptyDBTyped, InMemoryDB};
+use revm::inspector::NoOpInspector;
+use revm::primitives::hardfork::SpecId;
+use revm::primitives::{Address, TxKind};
+use revm::ExecuteCommitEvm;
+use revm::MainContext;
+use revm::{Context, Journal};
 use rpc::AppChainRPC;
 use rusty_leveldb::{AsyncDB, Options};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,18 +40,43 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tracing::info;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Account {
-    code: Bytes,
-    storage: Bytes,
-    balance: U256,
-    nonce: u64,
+pub struct MyTxEnv(TxEnv);
+
+impl From<&TxEnvelope> for MyTxEnv {
+    fn from(tx: &TxEnvelope) -> MyTxEnv {
+        MyTxEnv(
+            TxEnvBuilder::new()
+                .to(tx.to().unwrap())
+                .chain_id(tx.chain_id())
+                .kind(tx.kind())
+                .value(tx.value())
+                .caller(tx.recover_signer().unwrap())
+                .tx_type(Some(tx.tx_type().into()))
+                .nonce(tx.nonce())
+                .data(tx.input().clone())
+                .gas_price(tx.gas_price().unwrap_or(0))
+                .gas_limit(tx.gas_limit())
+                .max_fee_per_gas(tx.max_fee_per_gas())
+                .max_fee_per_blob_gas(tx.max_fee_per_blob_gas().unwrap_or(0))
+                .blob_hashes(
+                    tx.blob_versioned_hashes()
+                        .map(|slice| slice.to_vec())
+                        .unwrap_or_else(Vec::new),
+                )
+                .gas_priority_fee(tx.max_priority_fee_per_gas())
+                .build_fill(),
+        )
+    }
 }
+
+// access_list
+// authorization_list_len
+// authorization_list
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Block {
     pub header: BlockHeader,
-    pub transactions: Arc<Vec<TypedTransaction>>,
+    pub transactions: Arc<Vec<TxEnvelope>>,
     pub hash: B256,
 }
 
@@ -71,11 +111,11 @@ impl Default for BlockHeader {
             state_root: B256::from_str(
                 "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
             )
-            .unwrap(),
+            .expect("Valid hardcoded state root, parsing should never fail"),
             tx_root: B256::from_str(
                 "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
             )
-            .unwrap(),
+            .expect("Valid hardcoded state root, parsing should never fail"),
         }
     }
 }
@@ -97,7 +137,17 @@ impl Block {
         }
     }
 
-    pub async fn calculate_transaction_root(transactions: &[TypedTransaction]) -> B256 {
+    pub async fn calculate_transaction_root(transactions: &[TxEnvelope]) -> B256 {
+        {
+            let mut db = InMemoryDB::default();
+            let ctx = Context::<BlockEnv, TxEnv, CfgEnv, CacheDB<EmptyDBTyped<Infallible>>>::new(
+                db,
+                SpecId::PRAGUE,
+            );
+            let mut evm = BlaceEvm::new(ctx, NoOpInspector);
+            evm.0
+                .transact_many_commit(transactions.iter().map(|tx| MyTxEnv::from(tx).0));
+        }
         let memdb = Arc::new(MemoryDB::new(true));
         let mut mpt = EthTrie::new(memdb);
 
@@ -108,11 +158,7 @@ impl Block {
         mpt.root_hash().await.unwrap()
     }
 
-    pub async fn new(
-        parent_hash: B256,
-        block_number: u64,
-        transactions: Vec<TypedTransaction>,
-    ) -> Self {
+    pub async fn new(parent_hash: B256, block_number: u64, transactions: Vec<TxEnvelope>) -> Self {
         let transactions = Arc::new(transactions);
         let tx_root = Self::calculate_transaction_root(&transactions).await;
 
@@ -140,7 +186,7 @@ impl Block {
 
     pub async fn from_previous_block(
         &self,
-        transactions: Vec<TypedTransaction>,
+        transactions: Vec<TxEnvelope>,
         state_root: B256,
     ) -> Self {
         let transactions = Arc::new(transactions);
@@ -183,7 +229,7 @@ impl Block {
 }
 
 pub struct AppChain {
-    mempool: HashMap<B256, TypedTransaction>,
+    mempool: HashMap<B256, TxEnvelope>,
     meta_db: Arc<RwLock<AsyncDB>>,
     state_db: Arc<AsyncDB>,
     block_db: Arc<RwLock<BlockDataDB>>,
@@ -274,7 +320,7 @@ impl AppChain {
 
     pub async fn process_tx_in_mempool(&mut self) {
         // create vec of transactions
-        let (transaction_keys, transactions): (Vec<B256>, Vec<TypedTransaction>) =
+        let (transaction_keys, transactions): (Vec<B256>, Vec<TxEnvelope>) =
             self.mempool.iter().map(|(k, v)| (*k, v.clone())).unzip();
 
         for (i, tx) in transactions.iter().enumerate() {
@@ -299,7 +345,9 @@ impl AppChain {
         println!("Last block data: {:#?}", last_block);
         println!("{:?}", last_block.header.state_root);
 
-        // apply transactions to state
+        // apply transactions to state this logic will be done for creating finalized_block inside
+        // zk circuit for a batch a transactions the batch transaction will come from a blocks that
+        // is not been finalized
         for tx in transactions {}
 
         // saves all transactions and state transition to create new root and save block after that
