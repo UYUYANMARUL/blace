@@ -1,5 +1,6 @@
 use alloy::primitives::B256;
 use rusty_leveldb::{AsyncDB, Status, StatusCode, WriteBatch};
+use serde::Deserialize;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{marker::PhantomData, sync::Arc};
 
@@ -7,6 +8,7 @@ use crate::mpt::EthTrie;
 pub mod block_db;
 pub mod bytecode_db;
 pub mod mempool;
+pub mod meta_db;
 pub mod state_db;
 pub mod storage_db;
 
@@ -28,7 +30,7 @@ impl crate::mpt::AsyncDB for rusty_leveldb::AsyncDB {
     }
 
     async fn flush(&self) -> Result<(), Self::Error> {
-        <AsyncDB>::flush(&self);
+        <AsyncDB>::flush(&self).await;
         Ok(())
     }
 
@@ -101,28 +103,19 @@ trait DefaultDb {
     async fn flush(db: &mut AsyncDB) {
         db.flush().await;
     }
-
-    async fn update_term(db: &mut AsyncDB, term: CurrentDbTerm) -> Result<u64, Status> {
-        <CurrentDbTerm as DefaultDb>::insert(db, "currentterm".as_bytes().to_vec(), term)
-            .await
-            .ok_or_else(|| Status {
-                code: StatusCode::AsyncError,
-                err: "Wrong response type in AsyncDB.".to_string(),
-            })
-    }
-
-    async fn get_term(db: &mut AsyncDB) -> Result<CurrentDbTerm, Status> {
-        <CurrentDbTerm as DefaultDb>::get(db, "currentterm".as_bytes().to_vec())
-            .await
-            .ok_or_else(|| Status {
-                code: StatusCode::AsyncError,
-                err: "Wrong response type in AsyncDB.".to_string(),
-            })
-    }
 }
 
 type CurrentDbTerm = u64;
 
 impl DefaultDb for CurrentDbTerm {
     type Item = CurrentDbTerm;
+}
+
+pub struct WrapperDefaultDB<T>(PhantomData<T>);
+
+impl<T> DefaultDb for WrapperDefaultDB<T>
+where
+    T: Serialize + for<'de> Deserialize<'de>,
+{
+    type Item = T;
 }

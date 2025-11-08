@@ -11,9 +11,11 @@ hashbrown = "0.15.5"
 keccak-hash = "0.11.0"
 futures-lite = "2.6.0"
 alloy = { version = "1.0.24", features = ["full"] }
+alloy-rlp = "0.3.12"
 jsonrpsee = {version = "0.26.0", features = ["server", "http-client", "ws-client", "macros"] }
 bincode= {version = "2.0.1" , features = ["serde"]}
 tokio={ version = "1.41.0", features = ["full"] }
+tokio-stream = "0.1"
 anyhow="1.0.98"
 serde="1.0.219"
 serde_json="1.0.142"
@@ -33,5 +35,6 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 hyper = { version = "1.0", features = ["full"] }
 revm = {version = "29.0.0", features =["asyncdb"]}
+borsh = "1.5.7"
 
 [dev-dependencies]

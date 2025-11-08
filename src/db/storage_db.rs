@@ -46,6 +46,12 @@ impl StorageDb {
     }
 }
 
+impl Default for StorageDb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DefaultDb for StorageDb {
     type Item = EvmStorageMap;
 }

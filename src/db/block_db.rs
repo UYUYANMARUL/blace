@@ -1,5 +1,7 @@
 use super::DefaultDb;
-use crate::{db, Block, BlockHeader};
+use crate::{db, AppBlock};
+use alloy::consensus::{Header, TxEnvelope};
+use alloy_rlp::{Decodable, Encodable};
 use rusty_leveldb::{AsyncDB, Options};
 pub struct BlockHeadersDB {
     db: AsyncDB,
@@ -12,21 +14,17 @@ impl BlockHeadersDB {
         }
     }
 
-    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<BlockHeader> {
+    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<Header> {
         Self::get(&self.db, key).await
     }
 
-    pub async fn insert_block(
-        &mut self,
-        key: impl AsRef<[u8]>,
-        block: BlockHeader,
-    ) -> Option<BlockHeader> {
+    pub async fn insert_block(&mut self, key: impl AsRef<[u8]>, block: Header) -> Option<Header> {
         Self::insert(&mut self.db, key, block).await
     }
 }
 
 impl DefaultDb for BlockHeadersDB {
-    type Item = BlockHeader;
+    type Item = Header;
 }
 
 pub struct BlockDataDB {
@@ -40,17 +38,24 @@ impl BlockDataDB {
         }
     }
 
-    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<Block> {
-        Self::get(&self.db, key).await
+    pub async fn get_block(&self, key: impl AsRef<[u8]>) -> Option<AppBlock> {
+        let block = Self::get(&self.db, key).await?;
+        Some(AppBlock::decode(&mut block.as_slice()).unwrap())
     }
 
-    pub async fn insert_block(&mut self, key: impl AsRef<[u8]>, block: Block) -> Option<Block> {
-        let data = Self::insert(&mut self.db, key, block).await;
+    pub async fn insert_block(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        block: AppBlock,
+    ) -> Option<AppBlock> {
+        let mut encoded_block = Vec::<u8>::new();
+        block.encode(&mut encoded_block);
+        let data = Self::insert(&mut self.db, key, encoded_block).await?;
         Self::flush(&mut self.db).await;
-        data
+        Some(AppBlock::decode(&mut data.as_slice()).unwrap())
     }
 }
 
 impl DefaultDb for BlockDataDB {
-    type Item = Block;
+    type Item = Vec<u8>;
 }

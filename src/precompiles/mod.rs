@@ -1,5 +1,8 @@
 //! Custom precompile provider implementation.
 
+use alloy::sol;
+use alloy_sol_types::{SolCall, SolValue};
+use keccak_hash::{keccak, keccak256};
 use revm::{
     context::Cfg,
     context_interface::{ContextTr, JournalTr, LocalContextTr, Transaction},
@@ -8,14 +11,66 @@ use revm::{
     precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
     primitives::{address, hardfork::SpecId, Address, Bytes, U256},
 };
-use std::boxed::Box;
 use std::string::String;
+use std::{boxed::Box, io::Read};
+use util::{EvmArray, EvmHashmap};
+mod util;
 
-// Define our custom precompile address
-pub const CUSTOM_PRECOMPILE_ADDRESS: Address = address!("0000000000000000000000000000000000000100");
+pub enum CollectionValue<T: EVMStorable> {
+    Array(T),
+    Map(T),
+}
 
-// Custom storage key for our example
-const STORAGE_KEY: U256 = U256::ZERO;
+pub struct EvmStoreValues {
+    bytes: Vec<u8>,
+    collections: Vec<EvmStoreValues>,
+}
+
+pub trait EVMStorable {
+    fn encode_store_values(&self) -> EvmStoreValues;
+}
+
+#[derive(Debug)]
+struct RGBPixel {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+#[derive(Debug)]
+struct Game {
+    name: String,
+    size: U256,
+    grid: Vec<RGBPixel>,
+}
+
+impl<T> EVMStorable for Vec<T> {
+    fn encode_store_values(&self) -> EvmStoreValues {
+        let length = self.len();
+        todo!()
+    }
+}
+
+impl EVMStorable for RGBPixel {
+    fn encode_store_values(&self) -> EvmStoreValues {
+        todo!()
+    }
+}
+
+impl EVMStorable for Game {
+    fn encode_store_values(&self) -> EvmStoreValues {
+        todo!()
+    }
+}
+
+pub const BLACE_PRECOMPILE_ADDRESS: Address = address!("0000000000000000000000000000000000000000");
+sol! {
+    interface BlaceContract {
+        function create_blace(bytes32 uuid, string memory name, uint256 size) external returns (bytes32 gameId);
+        function place_pixel(bytes32 gameId, uint256 x, uint256 y, uint8 r, uint8 g, uint8 b) external returns (bool success);
+    }
+
+}
 
 /// Custom precompile provider that includes journal access functionality
 #[derive(Debug, Clone)]
@@ -44,7 +99,6 @@ where
             return false;
         }
         self.spec = spec;
-        // Create a new inner provider with the new spec
         self.inner = EthPrecompiles::default();
         true
     }
@@ -57,37 +111,51 @@ where
         is_static: bool,
         gas_limit: u64,
     ) -> Result<Option<Self::Output>, String> {
-        // Check if this is our custom precompile
-        if *address == CUSTOM_PRECOMPILE_ADDRESS {
+        if *address == BLACE_PRECOMPILE_ADDRESS {
             return Ok(Some(run_custom_precompile(
                 context, inputs, is_static, gas_limit,
             )?));
         }
-
-        // Otherwise, delegate to standard Ethereum precompiles
         self.inner
             .run(context, address, inputs, is_static, gas_limit)
     }
 
     fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
-        // Include our custom precompile address along with standard ones
-        let mut addresses = vec![CUSTOM_PRECOMPILE_ADDRESS];
+        let mut addresses = vec![BLACE_PRECOMPILE_ADDRESS];
         addresses.extend(self.inner.warm_addresses());
         Box::new(addresses.into_iter())
     }
 
     fn contains(&self, address: &Address) -> bool {
-        *address == CUSTOM_PRECOMPILE_ADDRESS || self.inner.contains(address)
+        *address == BLACE_PRECOMPILE_ADDRESS || self.inner.contains(address)
     }
 }
 
-/// Runs our custom precompile
 fn run_custom_precompile<CTX: ContextTr>(
     context: &mut CTX,
     inputs: &InputsImpl,
     is_static: bool,
     gas_limit: u64,
 ) -> Result<InterpreterResult, String> {
+    /*
+    struct RGBPixel {
+        uint8 r;
+        uint8 g;
+        uint8 b;
+    }
+    struct game {
+    string name
+    uint16 size;
+    RGBPixel[] grid;
+    }
+
+    slot 0
+    mapping(uuid=>game)
+
+    slot 1
+    games array
+
+    * */
     let input_bytes = match &inputs.input {
         revm::interpreter::CallInput::SharedBuffer(range) => {
             if let Some(slice) = context.local().shared_memory_buffer_slice(range.clone()) {
@@ -99,21 +167,44 @@ fn run_custom_precompile<CTX: ContextTr>(
         revm::interpreter::CallInput::Bytes(bytes) => bytes.0.to_vec(),
     };
 
-    // For this example, we'll implement a simple precompile that:
-    // - If called with empty data: reads a storage value
-    // - If called with 32 bytes: writes that value to storage and transfers 1 wei to the caller
+    let selector: [u8; 4] = input_bytes[0..4].try_into().unwrap();
 
-    let result = if input_bytes.is_empty() {
-        // Read storage operation
-        handle_read_storage(context, gas_limit)
-    } else if input_bytes.len() == 32 {
-        if is_static {
-            return Err("Cannot modify state in static context".to_string());
+    let result: PrecompileResult = match selector {
+        BlaceContract::create_blaceCall::SELECTOR => {
+            println!("create game with bytes {:?}", input_bytes);
+            let call = BlaceContract::create_blaceCall::abi_decode(&input_bytes).unwrap();
+            let key = U256::from_be_bytes(<[u8; 32]>::try_from(call.uuid.as_slice()).unwrap());
+
+            //mapping(uuid=>game)
+            let hashmap = EvmHashmap::<Game>::new(BLACE_PRECOMPILE_ADDRESS, U256::from(0));
+
+            //uuid[] game_id_array)
+            let game_array = EvmArray::<Game>::new(BLACE_PRECOMPILE_ADDRESS, U256::from(1));
+
+            if hashmap.exist(key, context.journal_mut()) {
+                Ok(PrecompileOutput::new_reverted(0, Bytes::new()))
+            } else {
+                let game = Game {
+                    name: call.name,
+                    size: call.size,
+                    grid: vec![],
+                };
+                // let game_bytes = game.abi_encode_packed();
+                // println!("{:?}", game_bytes);
+                // println!("{:?}", game);
+                // println!("{:?}", game.abi_encoded_size());
+                hashmap.insert(key, game, context.journal_mut());
+
+                Ok(PrecompileOutput::new(0, Bytes::new()))
+            }
         }
-        // Write storage operation
-        handle_write_storage(context, &input_bytes, gas_limit)
-    } else {
-        Err(PrecompileError::Other("Invalid input length".to_string()))
+        BlaceContract::place_pixelCall::SELECTOR => {
+            println!("create game with bytes {:?}", input_bytes);
+            let call = BlaceContract::place_pixelCall::abi_decode(&input_bytes).unwrap();
+            // handle_write_storage(context, key,call.(call) gas_limit)
+            Err(PrecompileError::Other("Invalid input length".to_string()))
+        }
+        _ => Err(PrecompileError::Other("Invalid input length".to_string())),
     };
 
     match result {
@@ -143,74 +234,4 @@ fn run_custom_precompile<CTX: ContextTr>(
             output: Bytes::new(),
         }),
     }
-}
-
-/// Handles reading from storage
-fn handle_read_storage<CTX: ContextTr>(context: &mut CTX, gas_limit: u64) -> PrecompileResult {
-    // Base gas cost for reading storage
-    const BASE_GAS: u64 = 2_100;
-
-    if gas_limit < BASE_GAS {
-        return Err(PrecompileError::OutOfGas);
-    }
-
-    // Read from storage using the journal
-    let value = context
-        .journal_mut()
-        .sload(CUSTOM_PRECOMPILE_ADDRESS, STORAGE_KEY)
-        .map_err(|e| PrecompileError::Other(format!("Storage read failed: {e:?}")))?
-        .data;
-
-    // Return the value as output
-    Ok(PrecompileOutput::new(
-        BASE_GAS,
-        value.to_be_bytes_vec().into(),
-    ))
-}
-
-/// Handles writing to storage and transferring balance
-fn handle_write_storage<CTX: ContextTr>(
-    context: &mut CTX,
-    input: &[u8],
-    gas_limit: u64,
-) -> PrecompileResult {
-    // Base gas cost for the operation
-    const BASE_GAS: u64 = 21_000;
-    const SSTORE_GAS: u64 = 20_000;
-
-    if gas_limit < BASE_GAS + SSTORE_GAS {
-        return Err(PrecompileError::OutOfGas);
-    }
-
-    // Parse the input as a U256 value
-    let value = U256::from_be_slice(input);
-
-    // Store the value in the precompile's storage
-    context
-        .journal_mut()
-        .sstore(CUSTOM_PRECOMPILE_ADDRESS, STORAGE_KEY, value)
-        .map_err(|e| PrecompileError::Other(format!("Storage write failed: {e:?}")))?;
-
-    // Get the caller address
-    let caller = context.tx().caller();
-
-    // Transfer 1 wei from the precompile to the caller as a reward
-    // First, ensure the precompile has balance
-    context
-        .journal_mut()
-        .balance_incr(CUSTOM_PRECOMPILE_ADDRESS, U256::from(1))
-        .map_err(|e| PrecompileError::Other(format!("Balance increment failed: {e:?}")))?;
-
-    // Then transfer to caller
-    let transfer_result = context
-        .journal_mut()
-        .transfer(CUSTOM_PRECOMPILE_ADDRESS, caller, U256::from(1))
-        .map_err(|e| PrecompileError::Other(format!("Transfer failed: {e:?}")))?;
-
-    if let Some(error) = transfer_result {
-        return Err(PrecompileError::Other(format!("Transfer error: {error:?}")));
-    }
-
-    // Return success with empty output
-    Ok(PrecompileOutput::new(BASE_GAS + SSTORE_GAS, Bytes::new()))
 }
